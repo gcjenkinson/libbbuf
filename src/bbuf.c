@@ -42,24 +42,30 @@
 
 #ifdef _KERNEL
 #include <sys/types.h>
+#include <sys/param.h>
+#include <sys/systm.h>
 #include <sys/libkern.h>
 #else
+#include <assert.h>
 #include <stddef.h>
 #include <strings.h>
 #endif
 
-#include "dl_assert.h"
-#include "dl_bbuf.h"
-#include "dl_memory.h"
-#include "dl_utils.h"
+#include "bbuf.h"
 
-struct dl_bbuf {
-	unsigned char *dlb_data;
-	int dlb_flags;
-	size_t dlb_pos;
-	size_t dlb_limit;
-	size_t dlb_capacity;
+struct bbuf {
+	unsigned char *bb_data;
+	int bb_flags;
+	size_t bb_pos;
+	size_t bb_limit;
+	size_t bb_capacity;
 };
+
+#if _KERNEL
+#define BBUF_ASSERT(exp, msg)	KASSERT(exp, msg)
+#else
+#define BBUF_ASSERT(exp, msg)	assert(exp)
+#endif
 
 /*!
  * Wrapper for __builtin_clz to mitigate undefined behaviour for zero values.
@@ -72,14 +78,14 @@ struct dl_bbuf {
 #define clz(value) \
   ((value) ? __builtin_clz(value) : 31)
 
-static const int DL_BBUF_USRFLAGMASK = (DL_BBUF_AUTOEXTEND | DL_BBUF_FIXEDLEN |  DL_BBUF_BIGENDIAN | DL_BBUF_LITTLEENDIAN);
-static const int DL_BBUF_MINEXTENDSIZE = 16;
-static const int DL_BBUF_MAXEXTENDSIZE = PAGE_SIZE;
-static const int DL_BBUF_MAXEXTENDINC = PAGE_SIZE;
+static const int BBUF_USRFLAGMASK = (BBUF_AUTOEXTEND | BBUF_FIXEDLEN |  BBUF_BIGENDIAN | BBUF_LITTLEENDIAN);
+static const int BBUF_MINEXTENDSIZE = 16;
+static const int BBUF_MAXEXTENDSIZE = PAGE_SIZE;
+static const int BBUF_MAXEXTENDINC = PAGE_SIZE;
 
 /*! Mapping: most-significant bit ==> packed size */
 static const size_t
-DLB_VARINT_SIZE_MAP[] = {
+bb_VARINT_SIZE_MAP[] = {
   1, 1, 1, 1, 1, 1, 1, 2,
   2, 2, 2, 2, 2, 2, 3, 3,
   3, 3, 3, 3, 3, 4, 4, 4,
@@ -90,304 +96,304 @@ DLB_VARINT_SIZE_MAP[] = {
   9, 9, 9, 9, 9, 9, 9, 10
 };
 
-static int dl_bbuf_extend(struct dl_bbuf *, int);
-static int dl_bbuf_extendsize(int);
+static int bbuf_extend(struct bbuf *, int);
+static int bbuf_extendsize(int);
 
 #ifdef _KERNEL
 static inline void
-dl_bbuf_assert_integrity(const char *func, struct dl_bbuf *self)
+bbuf_assert_integrity(const char *func, struct bbuf *self)
 #else
 static inline void
-dl_bbuf_assert_integrity(const char *func __attribute((unused)),
-    struct dl_bbuf const * const self)
+bbuf_assert_integrity(const char *func __attribute((unused)),
+    struct bbuf const * const self)
 #endif
 {
 
-	DL_ASSERT(self != NULL, ("%s called with NULL dl_buf instance", func)); 
-	DL_ASSERT(self->dlb_data != NULL,
-	    ("%s called with unititialised of corrupt dl_buf", func)); 
-	DL_ASSERT(self->dlb_pos <= self->dlb_capacity,
-	    ("wrote past the end of the dl_buf (%zu >= %zu)",
-	    self->dlb_pos, self->dlb_capacity)); 
+	BBUF_ASSERT(self != NULL, ("%s called with NULL bbuf instance", func));
+	BBUF_ASSERT(self->bb_data != NULL,
+	    ("%s called with unititialised of corrupt bbuf", func)); 
+	BBUF_ASSERT(self->bb_pos <= self->bb_capacity,
+	    ("wrote past the end of the bbuf (%zu >= %zu)",
+	    self->bb_pos, self->bb_capacity)); 
 }
 
 static int
-dl_bbuf_extendsize(int len)
+bbuf_extendsize(int len)
 {
-	int newlen = DL_BBUF_MINEXTENDSIZE;
+	int newlen = BBUF_MINEXTENDSIZE;
 
-	DL_ASSERT(len > 0, ("New buffer length cannot be <= 0."));
+	BBUF_ASSERT(len > 0, ("New buffer length cannot be <= 0."));
 
 	while (newlen < len) {
-		if (newlen < DL_BBUF_MAXEXTENDSIZE)
+		if (newlen < BBUF_MAXEXTENDSIZE)
 			newlen *= 2;
 		else
-			newlen += DL_BBUF_MAXEXTENDINC;
+			newlen += BBUF_MAXEXTENDINC;
 	}
 
-	DL_ASSERT(newlen > 0, ("New buffer length cannot be <= 0."));
+	BBUF_ASSERT(newlen > 0, ("New buffer length cannot be <= 0."));
 	return newlen;
 }
 
 static int
-dl_bbuf_extend(struct dl_bbuf *self, int addlen)
+bbuf_extend(struct bbuf *self, int addlen)
 {
 	unsigned char *newbuf;
 	int newlen;
 	
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 
-	newlen = dl_bbuf_extendsize(self->dlb_capacity + addlen);
-	newbuf = (unsigned char *) dlog_alloc(newlen);
+	newlen = bbuf_extendsize(self->bb_capacity + addlen);
+	newbuf = (unsigned char *) bbuf_alloc(newlen);
 #ifdef _KERNEL
-	DL_ASSERT(newbuf != NULL, ("Failed to reallocate dl_bbuf.\n"));
+	BBUF_ASSERT(newbuf != NULL, ("Failed to reallocate bbuf.\n"));
 	{
 #else
 	if (newbuf != NULL) {
 #endif
-		bcopy(self->dlb_data, newbuf, self->dlb_capacity);
-		dlog_free(self->dlb_data);
-		self->dlb_data = newbuf;
-		self->dlb_capacity = newlen;
-		self->dlb_limit = newlen;
-		dl_bbuf_assert_integrity(__func__, self);
+		bcopy(self->bb_data, newbuf, self->bb_capacity);
+		bbuf_free(self->bb_data);
+		self->bb_data = newbuf;
+		self->bb_capacity = newlen;
+		self->bb_limit = newlen;
+		bbuf_assert_integrity(__func__, self);
 		return 0;
 	}
 
-	DLOGTR0(PRIO_HIGH, "Failed to reallocate dl_bbuf.\n");
+	DLOGTR0(PRIO_HIGH, "Failed to reallocate bbuf.\n");
 	return -1;	
 }
 
 void
-dl_bbuf_delete(struct dl_bbuf *self)
+bbuf_delete(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-        if ((self->dlb_flags & DL_BBUF_EXTERNBUF) == 0)
-		dlog_free(self->dlb_data);
-	dlog_free(self);
+	bbuf_assert_integrity(__func__, self);
+        if ((self->bb_flags & BBUF_EXTERNBUF) == 0)
+		bbuf_free(self->bb_data);
+	bbuf_free(self);
 }
 
 int
-dl_bbuf_new(struct dl_bbuf **self, unsigned char *buf, size_t capacity, int flags)
+bbuf_new(struct bbuf **self, unsigned char *buf, size_t capacity, int flags)
 {
-	struct dl_bbuf *newbuf;
+	struct bbuf *newbuf;
 
-	DL_ASSERT(capacity >= 0,
-	    ("attempt to create a dl_buf of negative length (%zu)",
+	BBUF_ASSERT(capacity >= 0,
+	    ("attempt to create a bbuf of negative length (%zu)",
 	    capacity));
-	DL_ASSERT((flags & ~DL_BBUF_USRFLAGMASK) == 0,
+	BBUF_ASSERT((flags & ~BBUF_USRFLAGMASK) == 0,
 	    ("%s called with invalid flags", __func__));
 
-	flags &= DL_BBUF_USRFLAGMASK;
+	flags &= BBUF_USRFLAGMASK;
 
-	newbuf = (struct dl_bbuf *) dlog_alloc(sizeof(struct dl_bbuf));
+	newbuf = (struct bbuf *) bbuf_alloc(sizeof(struct bbuf));
 #ifdef _KERNEL
-	DL_ASSERT(newbuf != NULL, ("Failed to allocate dl_buf.\n"));
+	BBUF_ASSERT(newbuf != NULL, ("Failed to allocate bbuf.\n"));
 	{
 #else
 	if (newbuf != NULL) {
 #endif
-		newbuf->dlb_flags = flags;
-		newbuf->dlb_capacity = capacity;
-		newbuf->dlb_limit = capacity;
-		newbuf->dlb_pos = 0;
+		newbuf->bb_flags = flags;
+		newbuf->bb_capacity = capacity;
+		newbuf->bb_limit = capacity;
+		newbuf->bb_pos = 0;
 
 		if (buf == NULL)  {
-			newbuf->dlb_data = (unsigned char *) dlog_alloc(
+			newbuf->bb_data = (unsigned char *) bbuf_alloc(
 			    capacity);
 #ifdef _KERNEL
-			DL_ASSERT(newbuf->dlb_data != NULL,
-			    ("Failed to allocate dl_bbuf.\n"));
+			BBUF_ASSERT(newbuf->bb_data != NULL,
+			    ("Failed to allocate bbuf.\n"));
 			{
 #else
-			if (newbuf->dlb_data == NULL) {
+			if (newbuf->bb_data == NULL) {
 
-				dlog_free(newbuf);
+				bbuf_free(newbuf);
 				goto err;
 #endif
 			}
 		} else {
-			newbuf->dlb_data = buf;
-			newbuf->dlb_flags |=
-			    (DL_BBUF_EXTERNBUF | DL_BBUF_FIXEDLEN);
+			newbuf->bb_data = buf;
+			newbuf->bb_flags |=
+			    (BBUF_EXTERNBUF | BBUF_FIXEDLEN);
 		}
 			
-		/* dl_bbuf constructed successfully. */
+		/* bbuf constructed successfully. */
 		*self = newbuf;
 		return 0;
 	}
 
 #ifndef _KERNEL
 err:	
-	DLOGTR0(PRIO_HIGH, "Failed to allocate dl_bbuf.\n");
+	DLOGTR0(PRIO_HIGH, "Failed to allocate bbuf.\n");
 	*self = NULL;
 	return -1;
 #endif
 }
 
 int
-dl_bbuf_new_auto(struct dl_bbuf **buffer)
+bbuf_new_auto(struct bbuf **buffer)
 {
 
-	return dl_bbuf_new(buffer, NULL, DL_BBUF_MINEXTENDSIZE,
-	    DL_BBUF_AUTOEXTEND);
+	return bbuf_new(buffer, NULL, BBUF_MINEXTENDSIZE,
+	    BBUF_AUTOEXTEND);
 }
 
 int
-dl_bbuf_bcat(struct dl_bbuf *self, unsigned char const * const source, size_t len)
+bbuf_bcat(struct bbuf *self, unsigned char const * const source, size_t len)
 {
 	int add_len;
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 
-	if (self->dlb_pos + len > self->dlb_capacity) {
+	if (self->bb_pos + len > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			add_len = (self->dlb_pos + len) -
-			    self->dlb_capacity;
-			if (dl_bbuf_extend(self, add_len) != 0)
+			add_len = (self->bb_pos + len) -
+			    self->bb_capacity;
+			if (bbuf_extend(self, add_len) != 0)
 				return -1;
 		} else {
 			return -1;
 		}	
 	}
 
-	bcopy(source, &self->dlb_data[self->dlb_pos], len);
-	self->dlb_pos += len;
+	bcopy(source, &self->bb_data[self->bb_pos], len);
+	self->bb_pos += len;
 	return 0;
 }
 
 int
-dl_bbuf_scat(struct dl_bbuf *self, struct sbuf *source)
+bbuf_scat(struct bbuf *self, struct sbuf *source)
 {
-	dl_bbuf_assert_integrity(__func__, self);
-	DL_ASSERT(source != NULL, ("Source sbuf cannot be NULL"));
+	bbuf_assert_integrity(__func__, self);
+	BBUF_ASSERT(source != NULL, ("Source sbuf cannot be NULL"));
 
-	dl_bbuf_bcat(self, (unsigned char *) sbuf_data(source),
+	bbuf_bcat(self, (unsigned char *) sbuf_data(source),
 	    sbuf_len(source));
 	return 0;
 }
 
 void
-dl_bbuf_clear(struct dl_bbuf *self)
+bbuf_clear(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	self->dlb_pos = 0;
+	bbuf_assert_integrity(__func__, self);
+	self->bb_pos = 0;
 }
 
 int
-dl_bbuf_concat(struct dl_bbuf *self, struct dl_bbuf *source)
+bbuf_concat(struct bbuf *self, struct bbuf *source)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	dl_bbuf_assert_integrity(__func__, source);
+	bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, source);
 
-	if (self->dlb_pos + source->dlb_pos >
-	    self->dlb_capacity) {
+	if (self->bb_pos + source->bb_pos >
+	    self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, source->dlb_capacity) != 0)
+			if (bbuf_extend(self, source->bb_capacity) != 0)
 				return -1;
 		} else {
 			return -1;
 		}	
 	}
-	bcopy(source->dlb_data,
-	    &self->dlb_data[self->dlb_pos], source->dlb_pos);
-	self->dlb_pos += source->dlb_pos;
+	bcopy(source->bb_data,
+	    &self->bb_data[self->bb_pos], source->bb_pos);
+	self->bb_pos += source->bb_pos;
 	return 0;
 }
 
 unsigned char *
-dl_bbuf_data(struct dl_bbuf *self)
+bbuf_data(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	return self->dlb_data;
+	bbuf_assert_integrity(__func__, self);
+	return self->bb_data;
 }
 
-dl_bbuf_flags
-dl_bbuf_get_flags(struct dl_bbuf const *self)
+bbuf_flags
+bbuf_get_flags(struct bbuf const *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	return self->dlb_flags;
+	bbuf_assert_integrity(__func__, self);
+	return self->bb_flags;
 }
 
 int
-dl_bbuf_flip(struct dl_bbuf *self)
+bbuf_flip(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	self->dlb_limit = self->dlb_pos;
-	self->dlb_pos = 0;
+	bbuf_assert_integrity(__func__, self);
+	self->bb_limit = self->bb_pos;
+	self->bb_pos = 0;
 	return 0;
 }
 
 size_t
-dl_bbuf_len(struct dl_bbuf *self)
+bbuf_len(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	return self->dlb_limit;
+	bbuf_assert_integrity(__func__, self);
+	return self->bb_limit;
 }
 
 size_t
-dl_bbuf_pos(struct dl_bbuf *self)
+bbuf_pos(struct bbuf *self)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	return self->dlb_pos;
+	bbuf_assert_integrity(__func__, self);
+	return self->bb_pos;
 }
 
 int
-dl_bbuf_get_int8(struct dl_bbuf * const self, int8_t * const value)
+bbuf_get_int8(struct bbuf * const self, int8_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(int8_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(int8_t)) <= self->bb_limit) {
 
-		*value = self->dlb_data[self->dlb_pos++];
+		*value = self->bb_data[self->bb_pos++];
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_get_uint8(struct dl_bbuf * const self, uint8_t * const value)
+bbuf_get_uint8(struct bbuf * const self, uint8_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(uint8_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(uint8_t)) <= self->bb_limit) {
 
-		*value = self->dlb_data[self->dlb_pos++];
+		*value = self->bb_data[self->bb_pos++];
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_get_int16(struct dl_bbuf * const self, int16_t * const value)
+bbuf_get_int16(struct bbuf * const self, int16_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(int16_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(int16_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 		} else {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8)); 
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8)); 
 		}
 		return 0;
 	}
@@ -395,21 +401,21 @@ dl_bbuf_get_int16(struct dl_bbuf * const self, int16_t * const value)
 }
 
 int
-dl_bbuf_get_uint16(struct dl_bbuf * const self, uint16_t * const value)
+bbuf_get_uint16(struct bbuf * const self, uint16_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(uint16_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(uint16_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 		} else {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8)); 
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8)); 
 		}
 		return 0;
 	}
@@ -417,25 +423,25 @@ dl_bbuf_get_uint16(struct dl_bbuf * const self, uint16_t * const value)
 }
 
 int
-dl_bbuf_get_int32(struct dl_bbuf * const self, int32_t * const value)
+bbuf_get_int32(struct bbuf * const self, int32_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(int32_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(int32_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			*value =
-			    ((((uint32_t) self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    ((((uint32_t) self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 		} else {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 		}
 		return 0;
 	}
@@ -443,25 +449,25 @@ dl_bbuf_get_int32(struct dl_bbuf * const self, int32_t * const value)
 }
 
 int
-dl_bbuf_get_uint32(struct dl_bbuf * const self, uint32_t * const value)
+bbuf_get_uint32(struct bbuf * const self, uint32_t * const value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(uint32_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(uint32_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 		} else {
 			*value =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 		}
 		return 0;
 	}
@@ -469,38 +475,38 @@ dl_bbuf_get_uint32(struct dl_bbuf * const self, uint32_t * const value)
 }
 
 int
-dl_bbuf_get_int64(struct dl_bbuf * const self, int64_t * const value)
+bbuf_get_int64(struct bbuf * const self, int64_t * const value)
 {
 	uint32_t l, h;
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(int64_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(int64_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			h =
-			    ((((uint32_t) self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    ((((uint32_t) self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 			l = 
-			    ((((uint32_t) self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    ((((uint32_t) self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 			*value = (((uint64_t) h) << 32L) |
 			    (((uint64_t) l) & 0xFFFFFFFFL);
 		} else {
 			l =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 			h =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 			*value = (((uint64_t) h) << 32L) |
 			    (((uint64_t) l) & 0xFFFFFFFFL);
 		}
@@ -510,38 +516,38 @@ dl_bbuf_get_int64(struct dl_bbuf * const self, int64_t * const value)
 }
 
 int
-dl_bbuf_get_uint64(struct dl_bbuf * const self, uint64_t * const value)
+bbuf_get_uint64(struct bbuf * const self, uint64_t * const value)
 {
 	uint32_t l, h;
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (self->dlb_pos + sizeof(uint64_t)) <= self->dlb_limit) {
+	    (self->bb_pos + sizeof(uint64_t)) <= self->bb_limit) {
 
-		if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
+		if (self->bb_flags & BBUF_BIGENDIAN) {
 			h =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 			l = 
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 24) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 0));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 24) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 0));
 			*value = (((uint64_t) h) << 32L) |
 			    (((long) l) & 0xFFFFFFFFL);
 		} else {
 			l =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 			h =
-			    (((self->dlb_data[self->dlb_pos++] & 0xFF) << 0) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 8) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 16) |
-			    ((self->dlb_data[self->dlb_pos++] & 0xFF) << 24));
+			    (((self->bb_data[self->bb_pos++] & 0xFF) << 0) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 8) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 16) |
+			    ((self->bb_data[self->bb_pos++] & 0xFF) << 24));
 			*value = (((uint64_t) h) << 32L) |
 			    (((uint64_t) l) & 0xFFFFFFFFL);
 		}
@@ -552,167 +558,167 @@ dl_bbuf_get_uint64(struct dl_bbuf * const self, uint64_t * const value)
 
 
 int
-dl_bbuf_put_int8_at(struct dl_bbuf *self, int8_t value, size_t pos)
+bbuf_put_int8_at(struct bbuf *self, int8_t value, size_t pos)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (pos + sizeof(int8_t)) > self->dlb_capacity) {
+	    (pos + sizeof(int8_t)) > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, (int) sizeof(int8_t)) != 0)
+			if (bbuf_extend(self, (int) sizeof(int8_t)) != 0)
 				return -1;
 		} else {
 			return -1;
 		}
 	}
-	self->dlb_data[pos++] = value;
+	self->bb_data[pos++] = value;
 	return 0;
 }
 
 int
-dl_bbuf_put_int8(struct dl_bbuf *self, int8_t value)
+bbuf_put_int8(struct bbuf *self, int8_t value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	if (dl_bbuf_put_int8_at(self, value, self->dlb_pos) == 0) {
+	bbuf_assert_integrity(__func__, self);
+	if (bbuf_put_int8_at(self, value, self->bb_pos) == 0) {
 
-		self->dlb_pos += sizeof(int8_t);	
+		self->bb_pos += sizeof(int8_t);	
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_put_uint8_at(struct dl_bbuf *self, uint8_t value, size_t pos)
+bbuf_put_uint8_at(struct bbuf *self, uint8_t value, size_t pos)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (pos + sizeof(uint8_t)) > self->dlb_capacity) {
+	    (pos + sizeof(uint8_t)) > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, (int) sizeof(uint8_t)) != 0)
+			if (bbuf_extend(self, (int) sizeof(uint8_t)) != 0)
 				return -1;
 		} else {
 			return -1;
 		}
 	}
-	self->dlb_data[pos++] = value;
+	self->bb_data[pos++] = value;
 	return 0;
 }
 
 int
-dl_bbuf_put_uint8(struct dl_bbuf *self, uint8_t value)
+bbuf_put_uint8(struct bbuf *self, uint8_t value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	if (dl_bbuf_put_int8_at(self, value, self->dlb_pos) == 0) {
+	bbuf_assert_integrity(__func__, self);
+	if (bbuf_put_int8_at(self, value, self->bb_pos) == 0) {
 
-		self->dlb_pos += sizeof(int8_t);	
+		self->bb_pos += sizeof(int8_t);	
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_put_int16_at(struct dl_bbuf *self, int16_t value, size_t pos)
+bbuf_put_int16_at(struct bbuf *self, int16_t value, size_t pos)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (pos + sizeof(int16_t)) > self->dlb_capacity) {
+	    (pos + sizeof(int16_t)) > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, (int) sizeof(int16_t)) != 0)
+			if (bbuf_extend(self, (int) sizeof(int16_t)) != 0)
 			    return -1;
 		} else {
 			return -1;
 		}
 	}
 	
-	if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
+	if (self->bb_flags & BBUF_BIGENDIAN) {
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
 	} else {
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
 	}
 	return 0;
 }
 
 int
-dl_bbuf_put_int16(struct dl_bbuf *self, int16_t value)
+bbuf_put_int16(struct bbuf *self, int16_t value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	if (dl_bbuf_put_int16_at(self, value, self->dlb_pos) == 0) {
+	bbuf_assert_integrity(__func__, self);
+	if (bbuf_put_int16_at(self, value, self->bb_pos) == 0) {
 
-		self->dlb_pos += sizeof(int16_t);	
+		self->bb_pos += sizeof(int16_t);	
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_put_int32_at(struct dl_bbuf *self, int32_t value, size_t pos)
+bbuf_put_int32_at(struct bbuf *self, int32_t value, size_t pos)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (pos + sizeof(int32_t)) > self->dlb_capacity) {
+	    (pos + sizeof(int32_t)) > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, (int) sizeof(int32_t)) != 0)
+			if (bbuf_extend(self, (int) sizeof(int32_t)) != 0)
 			    return -1;
 		} else {
 			return -1;
 		}
 	}
 	
-	if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
-		self->dlb_data[pos++] = (value >> 24) & 0xFF;
-		self->dlb_data[pos++] = (value >> 16) & 0xFF;
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
+	if (self->bb_flags & BBUF_BIGENDIAN) {
+		self->bb_data[pos++] = (value >> 24) & 0xFF;
+		self->bb_data[pos++] = (value >> 16) & 0xFF;
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
 	} else {
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
-		self->dlb_data[pos++] = (value >> 16) & 0xFF;
-		self->dlb_data[pos++] = (value >> 24) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 16) & 0xFF;
+		self->bb_data[pos++] = (value >> 24) & 0xFF;
 	}
 	return 0;
 }
 
 int
-dl_bbuf_put_int32(struct dl_bbuf *self, int32_t value)
+bbuf_put_int32(struct bbuf *self, int32_t value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	if (dl_bbuf_put_int32_at(self, value, self->dlb_pos) == 0) {
+	bbuf_assert_integrity(__func__, self);
+	if (bbuf_put_int32_at(self, value, self->bb_pos) == 0) {
 
-		self->dlb_pos += sizeof(int32_t);	
+		self->bb_pos += sizeof(int32_t);	
 		return 0;
 	}
 	return -1;
 }
 
 int
-dl_bbuf_put_int32_as_varint(struct dl_bbuf *self, int32_t value)
+bbuf_put_int32_as_varint(struct bbuf *self, int32_t value)
 {
 	size_t packed_len;
 	uint8_t packed_value[5];
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 
 	/* zig-zag encode the signed value */
 	int32_t zigzag_value = (value << 1) ^ (value >> 31);		
 
-	packed_len = DLB_VARINT_SIZE_MAP[31 - clz(zigzag_value)];
+	packed_len = bb_VARINT_SIZE_MAP[31 - clz(zigzag_value)];
 
 	/* varint encode the value. */
 	size_t size = 0; uint32_t temp = zigzag_value;
@@ -735,56 +741,56 @@ dl_bbuf_put_int32_as_varint(struct dl_bbuf *self, int32_t value)
 	packed_value[size++] = temp;
 
 	/* Copy the varint encoded value into ther bbuf */
-	return dl_bbuf_bcat(self, packed_value, packed_len);
+	return bbuf_bcat(self, packed_value, packed_len);
 }
 
 int
-dl_bbuf_put_int64_at(struct dl_bbuf *self, int64_t value, size_t pos)
+bbuf_put_int64_at(struct bbuf *self, int64_t value, size_t pos)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
+	bbuf_assert_integrity(__func__, self);
 	if (self != NULL &&
-	    (pos + sizeof(int64_t)) > self->dlb_capacity) {
+	    (pos + sizeof(int64_t)) > self->bb_capacity) {
 
-		if (self->dlb_flags & DL_BBUF_AUTOEXTEND) {
+		if (self->bb_flags & BBUF_AUTOEXTEND) {
 
-			if (dl_bbuf_extend(self, (int) sizeof(int64_t)) != 0)
+			if (bbuf_extend(self, (int) sizeof(int64_t)) != 0)
 			    return -1;
 		} else {
 			return -1;
 		}
 	}
 
-	if (self->dlb_flags & DL_BBUF_BIGENDIAN) {
-		self->dlb_data[pos++] = (value >> 56) & 0xFF;
-		self->dlb_data[pos++] = (value >> 48) & 0xFF;
-		self->dlb_data[pos++] = (value >> 40) & 0xFF;
-		self->dlb_data[pos++] = (value >> 32) & 0xFF;
-		self->dlb_data[pos++] = (value >> 24) & 0xFF;
-		self->dlb_data[pos++] = (value >> 16) & 0xFF;
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
+	if (self->bb_flags & BBUF_BIGENDIAN) {
+		self->bb_data[pos++] = (value >> 56) & 0xFF;
+		self->bb_data[pos++] = (value >> 48) & 0xFF;
+		self->bb_data[pos++] = (value >> 40) & 0xFF;
+		self->bb_data[pos++] = (value >> 32) & 0xFF;
+		self->bb_data[pos++] = (value >> 24) & 0xFF;
+		self->bb_data[pos++] = (value >> 16) & 0xFF;
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
 	} else {
-		self->dlb_data[pos++] = (value >> 0) & 0xFF;
-		self->dlb_data[pos++] = (value >> 8) & 0xFF;
-		self->dlb_data[pos++] = (value >> 16) & 0xFF;
-		self->dlb_data[pos++] = (value >> 24) & 0xFF;
-		self->dlb_data[pos++] = (value >> 32) & 0xFF;
-		self->dlb_data[pos++] = (value >> 40) & 0xFF;
-		self->dlb_data[pos++] = (value >> 48) & 0xFF;
-		self->dlb_data[pos++] = (value >> 56) & 0xFF;
+		self->bb_data[pos++] = (value >> 0) & 0xFF;
+		self->bb_data[pos++] = (value >> 8) & 0xFF;
+		self->bb_data[pos++] = (value >> 16) & 0xFF;
+		self->bb_data[pos++] = (value >> 24) & 0xFF;
+		self->bb_data[pos++] = (value >> 32) & 0xFF;
+		self->bb_data[pos++] = (value >> 40) & 0xFF;
+		self->bb_data[pos++] = (value >> 48) & 0xFF;
+		self->bb_data[pos++] = (value >> 56) & 0xFF;
 	}
 	return 0;
 }
 
 int
-dl_bbuf_put_int64(struct dl_bbuf *self, int64_t value)
+bbuf_put_int64(struct bbuf *self, int64_t value)
 {
 
-	dl_bbuf_assert_integrity(__func__, self);
-	if (dl_bbuf_put_int64_at(self, value, self->dlb_pos) == 0) {
+	bbuf_assert_integrity(__func__, self);
+	if (bbuf_put_int64_at(self, value, self->bb_pos) == 0) {
 
-		self->dlb_pos += sizeof(int64_t);	
+		self->bb_pos += sizeof(int64_t);	
 		return 0;
 	}
 	return -1;

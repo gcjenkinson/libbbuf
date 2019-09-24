@@ -34,57 +34,107 @@
  *
  */
 
-#ifndef _DL_BBUF_H
-#define _DL_BBUF_H
+#ifndef _BBUF_H
+#define _BBUF_H
 
 #include <sys/types.h>
 #include <sys/sbuf.h>
 
 #ifndef _KERNEL
 #include <stdint.h>
+#include <syslog.h>
+#include <pthread.h>
 #endif
 
-enum dl_bbuf_flags {
-	DL_BBUF_AUTOEXTEND = 0x01 << 0,
-	DL_BBUF_FIXEDLEN = 0x01 << 1,
-	DL_BBUF_EXTERNBUF = 0x01 << 2,
-	DL_BBUF_BIGENDIAN = 0x01 << 3,
-	DL_BBUF_LITTLEENDIAN = 0x01 << 4
+typedef void * (* bbuf_malloc_func)(unsigned long);
+typedef void (* bbuf_free_func)(void *);
+
+enum bbuf_flags {
+	BBUF_AUTOEXTEND = 0x01 << 0,
+	BBUF_FIXEDLEN = 0x01 << 1,
+	BBUF_EXTERNBUF = 0x01 << 2,
+	BBUF_BIGENDIAN = 0x01 << 3,
+	BBUF_LITTLEENDIAN = 0x01 << 4
 };
-typedef enum dl_bbuf_flags dl_bbuf_flags;
+typedef enum bbuf_flags bbuf_flags;
 
-struct dl_bbuf;
+struct bbuf;
 
-extern void dl_bbuf_delete(struct dl_bbuf *);
-extern int dl_bbuf_new(struct dl_bbuf **, unsigned char *, size_t, int);
-extern int dl_bbuf_new_auto(struct dl_bbuf **);
-extern int dl_bbuf_bcat(struct dl_bbuf *, unsigned char const * const, size_t);
-extern int dl_bbuf_scat(struct dl_bbuf *, struct sbuf *);
-extern void dl_bbuf_clear(struct dl_bbuf *);
-extern int dl_bbuf_concat(struct dl_bbuf *, struct dl_bbuf *);
-extern unsigned char * dl_bbuf_data(struct dl_bbuf *);
-extern dl_bbuf_flags dl_bbuf_get_flags(struct dl_bbuf const *);
-extern int dl_bbuf_flip(struct dl_bbuf *);
-extern int dl_bbuf_get_int8(struct dl_bbuf * const, int8_t * const);
-extern int dl_bbuf_get_uint8(struct dl_bbuf * const, uint8_t * const);
-extern int dl_bbuf_get_int16(struct dl_bbuf * const, int16_t * const);
-extern int dl_bbuf_get_uint16(struct dl_bbuf * const, uint16_t * const);
-extern int dl_bbuf_get_int32(struct dl_bbuf * const, int32_t * const);
-extern int dl_bbuf_get_uint32(struct dl_bbuf * const, uint32_t * const);
-extern int dl_bbuf_get_int64(struct dl_bbuf * const, int64_t * const);
-extern int dl_bbuf_get_uint64(struct dl_bbuf * const, uint64_t * const);
-extern size_t dl_bbuf_len(struct dl_bbuf *);
-extern size_t dl_bbuf_pos(struct dl_bbuf *);
-extern int dl_bbuf_put_int8(struct dl_bbuf *, int8_t);
-extern int dl_bbuf_put_int8_at(struct dl_bbuf *, int8_t, size_t);
-extern int dl_bbuf_put_uint8(struct dl_bbuf *, uint8_t);
-extern int dl_bbuf_put_uint8_at(struct dl_bbuf *, uint8_t, size_t);
-extern int dl_bbuf_put_int16(struct dl_bbuf *, int16_t);
-extern int dl_bbuf_put_int16_at(struct dl_bbuf *, int16_t, size_t);
-extern int dl_bbuf_put_int32(struct dl_bbuf *, int32_t);
-extern int dl_bbuf_put_int32_as_varint(struct dl_bbuf *, int32_t);
-extern int dl_bbuf_put_int32_at(struct dl_bbuf *, int32_t, size_t);
-extern int dl_bbuf_put_int64(struct dl_bbuf *, int64_t);
-extern int dl_bbuf_put_int64_at(struct dl_bbuf *, int64_t, size_t);
+#ifdef _KERNEL
+#define DLOGTR0(event_mask, format) \
+	log(event_mask, format)
+#define DLOGTR1(event_mask, format, p1) \
+	log(event_mask, format, p1)
+#define DLOGTR2(event_mask, format, p1, p2) \
+	log(event_mask, format, p1, p2)
+#define DLOGTR3(event_mask, format, p1, p2, p3) \
+	log(event_mask, format, p1, p2, p3)
+#define DLOGTR4(event_mask, format, p1, p2, p3, p4) \
+	log(event_mask, format, p1, p2, p3, p4)
+#define DLOGTR5(event_mask, format, p1, p2, p3, p4, p5) \
+	log(event_mask, format, p1, p2, p3, p4, p5)
+#define DLOGTR6(event_mask, format, p1, p2, p3, p4, p5, p6) \
+	log(event_mask, format, p1, p2, p3, p4, p5, p6)
+#else
+#define DLOGTR0(event_mask, format) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self())
+#define DLOGTR1(event_mask, format, p1) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1)
+#define DLOGTR2(event_mask, format, p1, p2) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1, p2)
+#define DLOGTR3(event_mask, format, p1, p2, p3) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1, p2, p3)
+#define DLOGTR4(event_mask, format, p1, p2, p3, p4) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1, p2, p3, p4)
+#define DLOGTR5(event_mask, format, p1, p2, p3, p4, p5) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1, p2, p3, p4, p5)
+#define DLOGTR6(event_mask, format, p1, p2, p3, p4, p5, p6) \
+	syslog(event_mask, "[%08X] " format, (uint32_t) pthread_self(), \
+	p1, p2, p3, p4, p5, p66)
+#endif /* KERNEL */
+
+#define PRIO_HIGH   3 //LOG_ERR
+#define PRIO_NORMAL 5 //LOG_NOTICE
+#define PRIO_LOW    7 //LOG_DEBUG
+
+extern const bbuf_malloc_func bbuf_alloc;
+extern const bbuf_free_func bbuf_free;
+
+extern void bbuf_delete(struct bbuf *);
+extern int bbuf_new(struct bbuf **, unsigned char *, size_t, int);
+extern int bbuf_new_auto(struct bbuf **);
+extern int bbuf_bcat(struct bbuf *, unsigned char const * const, size_t);
+extern int bbuf_scat(struct bbuf *, struct sbuf *);
+extern void bbuf_clear(struct bbuf *);
+extern int bbuf_concat(struct bbuf *, struct bbuf *);
+extern unsigned char * bbuf_data(struct bbuf *);
+extern bbuf_flags bbuf_get_flags(struct bbuf const *);
+extern int bbuf_flip(struct bbuf *);
+extern int bbuf_get_int8(struct bbuf * const, int8_t * const);
+extern int bbuf_get_uint8(struct bbuf * const, uint8_t * const);
+extern int bbuf_get_int16(struct bbuf * const, int16_t * const);
+extern int bbuf_get_uint16(struct bbuf * const, uint16_t * const);
+extern int bbuf_get_int32(struct bbuf * const, int32_t * const);
+extern int bbuf_get_uint32(struct bbuf * const, uint32_t * const);
+extern int bbuf_get_int64(struct bbuf * const, int64_t * const);
+extern int bbuf_get_uint64(struct bbuf * const, uint64_t * const);
+extern size_t bbuf_len(struct bbuf *);
+extern size_t bbuf_pos(struct bbuf *);
+extern int bbuf_put_int8(struct bbuf *, int8_t);
+extern int bbuf_put_int8_at(struct bbuf *, int8_t, size_t);
+extern int bbuf_put_uint8(struct bbuf *, uint8_t);
+extern int bbuf_put_uint8_at(struct bbuf *, uint8_t, size_t);
+extern int bbuf_put_int16(struct bbuf *, int16_t);
+extern int bbuf_put_int16_at(struct bbuf *, int16_t, size_t);
+extern int bbuf_put_int32(struct bbuf *, int32_t);
+extern int bbuf_put_int32_as_varint(struct bbuf *, int32_t);
+extern int bbuf_put_int32_at(struct bbuf *, int32_t, size_t);
+extern int bbuf_put_int64(struct bbuf *, int64_t);
+extern int bbuf_put_int64_at(struct bbuf *, int64_t, size_t);
 
 #endif
