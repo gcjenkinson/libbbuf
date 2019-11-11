@@ -2,7 +2,13 @@
 
 Dynamic binary buffer modelled on `sbuf`s.
 
-## API
+## Build
+
+```
+$ ./autogensh
+$make
+$make install
+```
 
 ## API
 
