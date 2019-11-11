@@ -8,7 +8,7 @@ Dynamic binary buffer modelled on `sbuf`s.
 
 A binary buffer construct `bbuf_new_auto()` as follows:
 
-````
+```
 struct bbuf *buf;
 int rc;
 
