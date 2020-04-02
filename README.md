@@ -5,7 +5,7 @@ Dynamic binary buffer modelled on FreeBSD's `sbuf`.
 ## Build
 
 ```
-$ ./autogensh
+$ ./autogen.sh
 $ make
 $ make install
 ```
